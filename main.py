@@ -1,74 +1,73 @@
+
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
 import scrape  # Import the WebsiteCrawler class from scrape.py
 import streamlit as st
-
+ 
 # Load environment variables
 load_dotenv()
 api_key = os.getenv('OPENAI_API_KEY')
-
-# Validate API key
+ 
+# Streamlit app
+st.title("Website Summarizer")
+ 
+# Validate the API key up front and stop with a clear message in the UI
+# itself — a bare print() here would only show up in the server terminal,
+# never in the browser, so a missing or malformed key would otherwise fail
+# silently until someone clicks "Summarize" and gets a generic API error.
 if not api_key:
-    print("No API key was found - please check your .env file.")
-elif not api_key.startswith("sk-proj-"):
-    print("An API key was found, but it doesn't start with 'sk-proj-'. Please verify.")
+    st.error("No OpenAI API key was found. Add OPENAI_API_KEY to a .env file in the project folder.")
+    st.stop()
 elif api_key.strip() != api_key:
-    print("An API key was found, but it might contain extra spaces. Please remove them.")
-else:
-    print("API key found and looks good!")
-
+    st.error("Your OpenAI API key appears to contain extra whitespace. Please check your .env file.")
+    st.stop()
+ 
 # Initialize OpenAI client
-openai = OpenAI(api_key=api_key)
-
-# Function to generate the user prompt for summarization
-def user_prompt_for(website):
-    """Generates a user prompt using website title and extracted content."""
-    return f"""You are looking at a website titled: **{website.title}**
-
-The contents of this website are as follows. Please provide a **short summary** of the website in markdown.
-If it includes **news or announcements**, summarize those too.
-
----
-{website.get_clean_text()}
-"""
-
-# Function to summarize website content using GPT-4o Mini.  Handles large websites by splitting content into smaller chunks. Summarizes each chunk separately, preventing token overflow
+client = OpenAI(api_key=api_key)
+ 
 def summarize_website(url):
-    """Scrapes the website and generates a summary using OpenAI's GPT-4o Mini."""
-    crawler = scrape.WebsiteCrawler(url)  
+    """Scrapes the website and generates a summary using OpenAI's GPT-4o Mini.
+ 
+    Handles large websites by splitting content into smaller chunks,
+    summarizing each chunk separately to avoid token overflow, then
+    combining those summaries into one final summary.
+    """
+    crawler = scrape.WebsiteCrawler(url)
     full_text = crawler.get_clean_text()
-
+ 
+    if not full_text:
+        raise ValueError("No content could be extracted from that URL. The page may block automated access.")
+ 
     max_chunk_size = 4000  # Adjust based on GPT-4o-mini token limits
     chunks = [full_text[i:i + max_chunk_size] for i in range(0, len(full_text), max_chunk_size)]
-
+ 
     system_instructions = (
         "You are an assistant that analyzes website content and provides a short summary. "
         "Ignore navigation menus, sidebars, and irrelevant text. "
         "Respond in Markdown format."
     )
-
+ 
     summaries = []
     for chunk in chunks:
         prompt = f"""{system_instructions}
-
+ 
 ### Website Title: {crawler.title}
-
+ 
 The following is a portion of the website's content. Summarize it in markdown:
 ---
 {chunk}
 """
-
-        # Use the ChatCompletion endpoint for each chunk
-        response = openai.chat.completions.create(  # Updated line
+ 
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_instructions},
                 {"role": "user", "content": prompt}
             ]
         )
-        summaries.append(response.choices[0].message.content.strip()) 
-
+        summaries.append(response.choices[0].message.content.strip())
+ 
     # Combine all chunk summaries into a final summary
     final_prompt = (
         f"{system_instructions}\n\n"
@@ -77,33 +76,29 @@ The following is a portion of the website's content. Summarize it in markdown:
         "---\n"
         f"{chr(10).join(summaries)}"
     )
-
-
-    # Use the ChatCompletion endpoint for the final summary
-    final_response = openai.chat.completions.create(  # Updated line
+ 
+    final_response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": system_instructions},
             {"role": "user", "content": final_prompt}
         ]
     )
-
+ 
     return final_response.choices[0].message.content.strip()
-
-# Streamlit app
-st.title("Website Summarizer")
-
+ 
 url = st.text_input("Enter website URL:")
 summarize_button = st.button("Summarize")
-
+ 
 if summarize_button:
     if not url:
         st.warning("Please enter a URL.")
     else:
-        with st.spinner("Summarizing..."):  # Show a spinner while summarizing
+        with st.spinner("Summarizing..."):
             try:
                 summary = summarize_website(url)
                 st.write("Summary:")
-                st.write(summary)  # Use st.write for Markdown rendering
+                st.write(summary)
             except Exception as e:
-                st.error(f"An error occurred: {e}")  # Display errors in Streamlit
+                st.error(f"An error occurred: {e}")
+ 
